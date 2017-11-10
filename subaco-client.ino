@@ -22,10 +22,12 @@
 #define RESET 21
 #define SW_1 22
 #define SW_2 23
+#define ACS712_VIOUT 34
+#define ACS712_OFFST 35
 
 WiFiMulti wifiMulti;
 HardwareSerial USBHost(2);
-ACS712 acs712(34);   // ACS712 current sensor
+ACS712 acs712(ACS712_VIOUT, ACS712_OFFST);   // ACS712 current sensor
 
 const char* ntp_server1 = "ntp.nict.jp";
 const char* ntp_server2 = "ntp.jst.mfeed.ad.jp";
@@ -48,9 +50,9 @@ void setup() {
 
 void loop() {
   float current = acs712;
-  log_i("current: %.2lf", current);
+  log_i("current: %.2lf mA", current * 1000);
   log_i("product/serial %d %d", product.length(), serialNum.length());
-  if(current >= 0.02) {
+  if(current >= 0.05) {
     if(product.length() == 0 && serialNum.length() == 0) {
       digitalWrite(SW_2, LOW);
       delay(5);
