@@ -21,49 +21,83 @@
 #include "my_config.h"
 
 #define JST 3600 * 9
-#define SW_1 22
-#define SW_2 23
-#define ACS712_VIOUT 34
-#define ACS712_OFFST 35
+#define USB_D_PLS    GPIO_NUM_12
+#define USB_D_MNS    GPIO_NUM_14
+#define UHS_POWER    GPIO_NUM_16
+#define USB_SW_ON    GPIO_NUM_26
+#define ACS712_VIOUT GPIO_NUM_34
+#define ACS712_OFFST GPIO_NUM_35
 
-WiFiMulti wifiMulti;
-ACS712    acs712(ACS712_VIOUT, ACS712_OFFST);   // ACS712 current sensor
-USB       Usb;
+struct subacoDevice {
+  String manufacturer;
+  String product;
+  String serialNum;
+  bool empty() {
+    return manufacturer.length() == 0 && product.length() == 0 && serialNum.length() == 0;
+  }
+  void print() {
+    log_i("Manufacturer  : %s", manufacturer.c_str());
+    log_i("Product Name  : %s", product.c_str());
+    log_i("Serial Number : %s", serialNum.c_str());
+  }
+};
 
-const char* ntp_server1 = "ntp.nict.jp";
-const char* ntp_server2 = "ntp.jst.mfeed.ad.jp";
+ACS712       acs712(ACS712_VIOUT, ACS712_OFFST);   // ACS712 current sensor
+subacoDevice device;
+USB          Usb;
+WiFiMulti    wifiMulti;
 
-String product;
-String serialNum;
+bool          isUsbPinsLow = false;
+unsigned long preTime = 0;
+const char*   ntp_server1 = "ntp.nict.jp";
+const char*   ntp_server2 = "ntp.jst.mfeed.ad.jp";
+String        product;
+String        serialNum;
 
 void setup() {
   Serial.begin(115200);
   delay(10); // wait for serial monitor
-  pinMode(SW_1, OUTPUT);
-  pinMode(SW_2, OUTPUT);
-  digitalWrite(SW_2, HIGH);
   log_i("Hello, this is ESP32.");
+  preTime = millis();
+  
   addMyAP(wifiMulti); // my_config.h
-  if (Usb.Init() == -1) { log_e("OSC did not start."); }
+  pinMode(USB_D_PLS, INPUT_PULLDOWN);
+  pinMode(USB_D_MNS, INPUT_PULLDOWN);
+  pinMode(UHS_POWER, OUTPUT);
+  pinMode(USB_SW_ON, OUTPUT);
+  if(digitalRead(USB_D_PLS) + digitalRead(USB_D_MNS) == 0) { isUsbPinsLow = true; }
+  delay(2000); // wait charge to start
 }
 
 void loop() {
-  float current = acs712;
-  log_i("current: %.2lf mA", current * 1000);
-  log_i("product/serial %d %d", product.length(), serialNum.length());
-  if(current >= 0.05) {
-    if(product.length() == 0 && serialNum.length() == 0) {
-      digitalWrite(SW_2, LOW);
-      delay(5);
-      digitalWrite(SW_1, HIGH);
-      while(Usb.getUsbTaskState() != USB_STATE_RUNNING) { Usb.Task(); }
-      Usb.ForEachUsbDevice(&getStrDescriptors);
-      digitalWrite(SW_1, LOW); // usb host shield is off
-    }
-    log_i("Product Name: %s", product.c_str());
-    log_i("Serial Number: %s", serialNum.c_str());
-    digitalWrite(SW_2, HIGH);
-
+  int usbPin = digitalRead(USB_D_PLS) + digitalRead(USB_D_MNS);
+  if(!usbPin && isUsbPinsLow) {
+    digitalWrite(UHS_POWER, LOW);
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+    esp_deep_sleep_enable_ext1_wakeup((1<<USB_D_PLS) + (1<<USB_D_MNS), ESP_EXT1_WAKEUP_ANY_HIGH);
+    log_i("Sleep starting...");
+    esp_deep_sleep_start();
+  }
+  else if(!usbPin) { isUsbPinsLow = true; }
+  else { isUsbPinsLow = false; }
+  
+  if(device.empty()) {
+    log_i("retrieving usb descr...");
+    digitalWrite(USB_SW_ON, LOW);
+    delay(2);
+    digitalWrite(UHS_POWER, HIGH);
+    if (Usb.Init() == -1) { log_e("OSC did not start."); }
+    while(Usb.getUsbTaskState() < USB_STATE_RUNNING) { Usb.Task(); }
+    Usb.ForEachUsbDevice(&getStrDescriptors);
+    device.print();
+    digitalWrite(USB_SW_ON, HIGH);
+  }
+ 
+  if(millis() - preTime > 10000) { // every 10 seconds
+    preTime = millis();
+    float current = acs712;
+    log_i("current: %.2lf mA", current * 1000);
+    /*
     connectToWiFi();
     configTime(JST, 0, ntp_server1, ntp_server2); // time setting
     delay(100);
@@ -71,12 +105,9 @@ void loop() {
     log_d("Time: %s", ctime(&time_now));
     postToServer(getJSON(current, time_now, product));
     WiFi.disconnect();
+    */
   }
-  else {
-    product = "";
-    serialNum = "";
-  }
-  delay(10000);
+  delay(100);
 }
 
 String getJSON(float current, time_t time_now, String to_dev) {
@@ -110,8 +141,7 @@ void postToServer(String jsonStr) {
     log_e("Connection failed!");
   else {
     log_i("https connected");
-    String req;
-    req = "POST " + String(SUBACO_TAG) + " HTTP/1.1\r\n";
+    String req = "POST " + String(SUBACO_TAG) + " HTTP/1.1\r\n";
     req += "Content-Type: application/json\r\n";
     req += "Host: " + String(SUBACO_HOST) + "\r\n";
     req += "Content-Length: " + String(jsonStr.length()) + "\r\n\r\n";
@@ -130,23 +160,22 @@ void postToServer(String jsonStr) {
   }
 }
 
-//esp_sleep_enable_timer_wakeup(uint64_t time_in_us);
-//esp_light_sleep_start();
-
 void getStrDescriptors(UsbDevice *pdev) {
   uint8_t addr = pdev->address.devAddress;
-  Usb.Task();
-  if (Usb.getUsbTaskState() < USB_STATE_CONFIGURING) { return; } // state must be configuring or higher
+  while (Usb.getUsbTaskState() < USB_STATE_CONFIGURING) { Usb.Task(); } // state must be configuring or higher
   USB_DEVICE_DESCRIPTOR buf;
   if (Usb.getDevDescr(addr, 0, DEV_DESCR_LEN, (uint8_t *)&buf) != NULL) { return; }
   if (buf.iManufacturer > 0) {
     String manufacturer = getstrdescr(addr, buf.iManufacturer);
+    if(manufacturer != "") { device.manufacturer = manufacturer; }
   }
   if (buf.iProduct > 0) {
-    product = getstrdescr(addr, buf.iProduct);
+    String product = getstrdescr(addr, buf.iProduct);
+    if(product != "") { device.product = product; }
   }
   if (buf.iSerialNumber > 0) {
-    serialNum = getstrdescr(addr, buf.iSerialNumber);
+    String serialNum = getstrdescr(addr, buf.iSerialNumber);
+    if(serialNum != "") { device.serialNum = serialNum; }
   }
 }
 
@@ -161,7 +190,7 @@ String getstrdescr(uint8_t addr, uint8_t idx) {
     log_e("Error retrieving LangID table: %#08x", rcode);
     return "";
   }
-  uint8_t langid = (buf[3] << 8) | buf[2];
+  uint16_t langid = (buf[3] << 8) | buf[2];
   if (rcode = Usb.getStrDescr(addr, 0, 1, idx, langid, buf) != NULL) {
     log_e("Error retrieving string length: %#08x", rcode);
     return "";

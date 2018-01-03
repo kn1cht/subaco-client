@@ -1,5 +1,5 @@
-#ifndef ACS712_05B_H
-#define ACS712_05B_H
+#ifndef ACS712_05B_HPP
+#define ACS712_05B_HPP
 
 #include <Arduino.h>
 
