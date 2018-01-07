@@ -54,13 +54,9 @@ subacoDevice device;
 USB          Usb;
 WiFiMulti    wifiMulti;
 
-bool          isUsbPinsLow = false;
-bool          isCharging = false;
 unsigned long preTime = 0;
 const char*   ntp_server1 = "ntp.nict.jp";
 const char*   ntp_server2 = "ntp.jst.mfeed.ad.jp";
-String        product;
-String        serialNum;
 
 void setup() {
   Serial.begin(115200);
@@ -71,7 +67,6 @@ void setup() {
   addMyAP(wifiMulti); // my_config.h
   pinMode(USB_D_PLS, INPUT_PULLDOWN);
   pinMode(USB_D_MNS, INPUT_PULLDOWN);
-  if(digitalRead(USB_D_PLS) + digitalRead(USB_D_MNS) == 0) { isUsbPinsLow = true; }
   pinMode(UHS_POWER, OUTPUT);
   digitalWrite(UHS_POWER, HIGH);
   if (Usb.Init() == -1) { log_e("OSC did not start."); }
@@ -84,18 +79,19 @@ void setup() {
 
 void loop() {
   float current = acs712;
-  log_i("current: %.2lf mA", current * 1000);
   int usbPin = digitalRead(USB_D_PLS) + digitalRead(USB_D_MNS);
-  if(isCharging && current > 0.05) {}
-  else if(!usbPin && isUsbPinsLow) {
+  if(!usbPin && (device.empty() || current < 0.05)) {
+    if(!device.empty()) {
+      connectToWiFi();
+      postToServer(getJSON(current, device, SUBACO_CHARGE_END));
+      WiFi.disconnect();
+    }
     digitalWrite(UHS_POWER, LOW);
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
     esp_sleep_enable_ext1_wakeup((1<<USB_D_PLS) + (1<<USB_D_MNS), ESP_EXT1_WAKEUP_ANY_HIGH);
     log_i("Sleep starting...");
     esp_deep_sleep_start();
   }
-  else if(!usbPin) { isUsbPinsLow = true; }
-  else { isUsbPinsLow = false; }
   
   if(device.empty()) {
     log_i("retrieving usb descr...");
@@ -104,21 +100,22 @@ void loop() {
     while(Usb.getUsbTaskState() < USB_STATE_RUNNING) { Usb.Task(); }
     Usb.ForEachUsbDevice(&getStrDescriptors);
     device.print();
-    isCharging = true;
-    digitalWrite(USB_SW_ON, HIGH);
     digitalWrite(UHS_POWER, LOW);
+    digitalWrite(USB_SW_ON, HIGH);
     digitalWrite(BAT_SW_OFF, HIGH);
     delay(50);
     digitalWrite(BAT_SW_OFF, LOW);
-    digitalWrite(UHS_POWER, HIGH);
-    while(Usb.getUsbTaskState() < USB_STATE_RUNNING) { Usb.Task(); }
     connectToWiFi();
+    configTime(JST, 0, ntp_server1, ntp_server2); // time setting
+    delay(100);
     postToServer(getJSON(0, device, SUBACO_CHARGE_START));
     WiFi.disconnect();
-
+    digitalWrite(UHS_POWER, HIGH);
+    while(Usb.getUsbTaskState() < USB_STATE_RUNNING) { Usb.Task(); }
   }
   else if(millis() - preTime > 20000) { // every 20 seconds
-    log_i("USB pins: %s", usbPin ? "HIGH" : "LOW");
+  log_i("current: %.2lf mA", current * 1000);
+  log_i("USB pins: %s", usbPin ? "HIGH" : "LOW");
     preTime = millis();
     connectToWiFi();
     postToServer(getJSON(current, device, SUBACO_CHARGE_ONGOING));
@@ -132,10 +129,9 @@ String getJSON(float current, subacoDevice device, subacoChargeState state) {
   StaticJsonBuffer<500> jsonBuffer;
   JsonObject& root = jsonBuffer.createObject();
   root["token"] = SUBACO_API_TOKEN;
-  root["current"] = current;
-  root["state"] = state;
+  root["current"] = current * 1000;
+  root["state"] = (int)state;
 
-  configTime(JST, 0, ntp_server1, ntp_server2); // time setting
   while(time(NULL) == 0) { delay(10); }
   time_t now = time(NULL);
   log_d("Time: %s", ctime(&now));
@@ -150,23 +146,11 @@ String getJSON(float current, subacoDevice device, subacoChargeState state) {
   return json;
 }
 
-void connectToWiFi() {
-  WiFi.disconnect();
-  WiFi.begin("lolllool","loooooooool"); //Can be a nonexistent network
-  while(wifiMulti.run() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
-  }
-  log_i("WiFi connected! IP address: ");
-  Serial.println(WiFi.localIP());
-}
-
 void postToServer(String json) {
   WiFiClient client;
-  if (!client.connect(SUBACO_HOST, SUBACO_PORT))
-    log_e("Connection failed!");
+  if (!client.connect(SUBACO_HOST, SUBACO_PORT)) { log_e("Connection failed!"); }
   else {
-    log_i("https connected");
+    log_i("http connected");
     String req = "POST " + String(SUBACO_PATH) + " HTTP/1.1\r\n"\
                + "Content-Type: application/json\r\n"\
                + "Host: " + String(SUBACO_HOST) + "\r\n"\
@@ -184,6 +168,17 @@ void postToServer(String json) {
     }
     client.stop();
   }
+}
+
+void connectToWiFi() {
+  WiFi.disconnect();
+  WiFi.begin("dummy","pass"); //Can be a nonexistent network
+  while(wifiMulti.run() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  log_i("WiFi connected! IP address: ");
+  Serial.println(WiFi.localIP());
 }
 
 void getStrDescriptors(UsbDevice *pdev) {

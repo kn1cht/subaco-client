@@ -16,7 +16,7 @@ public:
 		}
     float vIout = (float)sum_vIout / 10.0 / 4096 * Attenuator;
     float offst = (float)sum_offst / 10.0 / 4096 * Attenuator;
-    log_i("vIout: %lf V\tOffset: %lf V", vIout, offst);
+    //log_i("vIout: %lf V\tOffset: %lf V", vIout, offst);
     return (vIout - offst) / Sensitivity;
   }
 
