@@ -44,9 +44,9 @@ struct subacoDevice {
 };
 
 enum subacoChargeState { 
-  SUBACO_CHARGE_START,
-  SUBACO_CHARGE_CONTINUE,
-  SUBACO_CHARGE_END 
+  SUBACO_CHARGE_START = 1,
+  SUBACO_CHARGE_ONGOING = 2,
+  SUBACO_CHARGE_END = 0 
 };
 
 ACS712       acs712(ACS712_VIOUT, ACS712_OFFST);   // ACS712 current sensor
@@ -86,7 +86,6 @@ void loop() {
   float current = acs712;
   log_i("current: %.2lf mA", current * 1000);
   int usbPin = digitalRead(USB_D_PLS) + digitalRead(USB_D_MNS);
-  log_i("USB pins: %s", usbPin ? "HIGH" : "LOW");
   if(isCharging && current > 0.05) {}
   else if(!usbPin && isUsbPinsLow) {
     digitalWrite(UHS_POWER, LOW);
@@ -109,7 +108,7 @@ void loop() {
     digitalWrite(USB_SW_ON, HIGH);
     digitalWrite(UHS_POWER, LOW);
     digitalWrite(BAT_SW_OFF, HIGH);
-    delay(1000);
+    delay(50);
     digitalWrite(BAT_SW_OFF, LOW);
     digitalWrite(UHS_POWER, HIGH);
     while(Usb.getUsbTaskState() < USB_STATE_RUNNING) { Usb.Task(); }
@@ -119,9 +118,10 @@ void loop() {
 
   }
   else if(millis() - preTime > 20000) { // every 20 seconds
+    log_i("USB pins: %s", usbPin ? "HIGH" : "LOW");
     preTime = millis();
     connectToWiFi();
-    postToServer(getJSON(current, device, SUBACO_CHARGE_CONTINUE));
+    postToServer(getJSON(current, device, SUBACO_CHARGE_ONGOING));
     WiFi.disconnect();
   }
   delay(100);
@@ -131,12 +131,15 @@ String getJSON(float current, subacoDevice device, subacoChargeState state) {
   String json;
   StaticJsonBuffer<500> jsonBuffer;
   JsonObject& root = jsonBuffer.createObject();
+  root["token"] = SUBACO_API_TOKEN;
   root["current"] = current;
+  root["state"] = state;
 
   configTime(JST, 0, ntp_server1, ntp_server2); // time setting
+  while(time(NULL) == 0) { delay(10); }
   time_t now = time(NULL);
   log_d("Time: %s", ctime(&now));
-  root["datetime"] = now;
+  root["ts"] = now;
 
   JsonObject& toDevice = root.createNestedObject("toDevice");
   toDevice["name"] = device.product;
@@ -160,7 +163,7 @@ void connectToWiFi() {
 
 void postToServer(String json) {
   WiFiClient client;
-  if (!client.connect(SUBACO_HOST, 80))
+  if (!client.connect(SUBACO_HOST, SUBACO_PORT))
     log_e("Connection failed!");
   else {
     log_i("https connected");
