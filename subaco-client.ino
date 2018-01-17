@@ -98,7 +98,7 @@ void loop() {
     digitalWrite(USB_SW_ON, LOW);
     delay(2);
     while(Usb.getUsbTaskState() < USB_STATE_RUNNING) { Usb.Task(); }
-    Usb.ForEachUsbDevice(&getStrDescriptors);
+    while(device.empty()) { Usb.ForEachUsbDevice(&getStrDescriptors); }
     device.print();
     digitalWrite(UHS_POWER, LOW);
     digitalWrite(USB_SW_ON, HIGH);
@@ -107,7 +107,6 @@ void loop() {
     digitalWrite(BAT_SW_OFF, LOW);
     connectToWiFi();
     configTime(JST, 0, ntp_server1, ntp_server2); // time setting
-    delay(100);
     postToServer(getJSON(0, device, SUBACO_CHARGE_START), "start");
     WiFi.disconnect();
     digitalWrite(UHS_POWER, HIGH);
@@ -132,7 +131,7 @@ String getJSON(float current, subacoDevice device, subacoChargeState state) {
   root["current"] = current * 1000;
   root["state"] = (int)state;
 
-  while(time(NULL) == 0) { delay(10); }
+  while(time(NULL) < 1000000000) { delay(10); }
   time_t now = time(NULL);
   log_d("Time: %s", ctime(&now));
   root["ts"] = now;
